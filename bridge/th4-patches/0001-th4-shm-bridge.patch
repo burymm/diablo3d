@@ -1,0 +1,428 @@
+diff --git a/lib/SmackW32.DLL b/lib/SmackW32.DLL
+index 7ea887181f34ab10ade25d5a80502d33b58133c0..2a98b662c23c60ccacda5c2d95bc9d0df907b0c5 100644
+GIT binary patch
+delta 291
+zcmZp8!P@YGbwUTT;DY@VyM39ZG?+Ht{$ym)-L`^-fguYByZd$kS%IBxYk<`8wk1H4
+zk%56B>_yJ&|NkL;AeSNT5DUYZGiNrln&^K78MfVAm2n|AW8U_g28`Ou%mNGcPiGHd
+z)RhJ@OhD>Erhv?uz`)P|;(-+ShcJqwC`biL96(Y~kFJ0d=$a28?LYuBVLdhl0w8-J
+z3bx-5Vcg8Zm^XcLBx4|>`Sjc<M*Zm`QH+m(Lf@kpOMz5wG@~|DX8Va~Mhgi5l!i?n
+
+delta 278
+zcmZp8!P@YGbwUSohQ{lO-M-A4m5dv2e=<@(-nN8=fq{{MfuXx?1(4O*wgyOc3v_$1
+z1a`OW0J4Ju!d_%f{%9<-S-?c)BS`;tb5+KL+>FKBZyGRaD>J8Syq?Y;!l)|^WS9UA
+z0s=;`i4zzY8bCad0{;+3Q4|HKK#2oL3hL1na02cA0MZTwAQRSOQy>6xIYhzs`yq^*
+tSs06_PmW{^WVD!`8^x$UT_lR}5m4xR6k{on%8h2!hRSR|5zS~J0RULdNSy!x
+
+diff --git a/src/Main.cpp b/src/Main.cpp
+index 58c1682..ed28956 100644
+--- a/src/Main.cpp
++++ b/src/Main.cpp
+@@ -2328,6 +2328,12 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
+ 	#endif
+ 	InitTH2( &hInstance );
+ 
++	// D1-мост: экспорт адресов карты
++	D1ExportMap();
++
++	// D1-мост: инициализация shared memory
++	D1BridgeInit();
++
+ 	// ------ Original code start here ---------------------------------------
+ 	#ifdef _PROTECTION
+ 	HINSTANCE prevInst = hInstance;
+@@ -2383,6 +2389,9 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
+ 	}
+ 	// ------ Original code end here ---------------------------------------
+ 
++	// D1-мост: завершение работы shared memory
++	D1BridgeShutdown();
++
+ 	ExitTH2();
+ 	} __except( CreateMiniDump( GetExceptionInformation() ), EXCEPTION_EXECUTE_HANDLER ) {}
+ 	
+@@ -5355,6 +5364,12 @@ void GameLogic()
+ 				#endif
+ 				WorldFrameIndex++;
+ 				ProcessPlayers();
++
++				// D1-мост: публикация состояния в shared memory
++				D1BridgePublish();
++
++				// D1-мост: обработка команд от GMod (destAction)
++				D1BridgeProcessCommands();
+ 			}
+ 			DamageMonstersByAuras(); // There is a little bit righter place for this, so you need to modify FPS dependency in this, it calls 20 times per second
+ 			if( Dungeon->genType || Dungeon->isQuest /*&& QuestFloorIndex == QF_20_RAVENHOLM*/ ){ // not town
+diff --git a/src/d1bridge.cpp b/src/d1bridge.cpp
+new file mode 100644
+index 0000000..7e84260
+--- /dev/null
++++ b/src/d1bridge.cpp
+@@ -0,0 +1,309 @@
++// d1bridge.cpp — публикация состояния TH4 в именованную разделяемую память
++// Р-25: th43d.exe сам пишет состояние, мост только читает
++#include "stdafx.h"
++#include <windows.h>
++
++// Имя разделяемой памяти (фиксировано)
++#define D1BRIDGE_SHM_NAME "D1BridgeState"
++#define D1BRIDGE_MAGIC   0x31423144  // 'D1B1'
++#define D1BRIDGE_VERSION 1
++
++// Размеры карты
++#define FINE_MAP_SIZE   (112 * 112)
++#define TBW_SIZE        2049
++#define PLAYER_MAP_SIZE (112 * 112)
++
++// Структура заголовка shared memory
++#pragma pack(push, 1)
++struct D1BridgeHeader {
++    uint32_t magic;        // 'D1B1'
++    uint32_t version;      // 1
++    uint32_t seq;          // seqlock: нечётное = идёт запись, чётное = стабильно
++    uint32_t player_size;  // sizeof(D1BridgePlayer) — читатели определяют раскладку
++    uint64_t timestamp_ms; // GetTickCount64()
++};
++
++// Данные героя (фиксированный размер, без указателей)
++struct D1BridgePlayer {
++    int16_t  Row;
++    int16_t  Col;
++    int16_t  dir;
++    int16_t  dungeon;
++    int16_t  CurAction;   // PCA_0_STAND = 0 — герой стоит и готов к шагу
++    int16_t  padding;
++    int32_t  CurLife;
++    int32_t  MaxCurLife;
++    int32_t  CurMana;
++    int32_t  MaxCurMana;
++    int16_t  CharLevel;
++    uint16_t ClassID;
++    int64_t  Xp;
++    int32_t  TotalGold;
++    char     name[32];
++};
++
++// Команда от GMod → TH4 (обратный канал через shared memory)
++struct D1BridgeCommand {
++    uint32_t seq;          // номер команды (инкремент от GMod)
++    uint32_t action;       // PLAYER_COMMAND (1=walkUR, 2=walkUL, ..., 20=melee_monster, 22=range_monster)
++    int32_t  param1;       // destParam1 (map row / object index)
++    int32_t  param2;       // destParam2 (map col / spell level)
++    int32_t  param3;       // destParam3
++    int32_t  param4;       // destParam4
++    uint32_t timestamp_ms; // когда команда отправлена
++};
++
++// Полная структура shared memory
++struct D1BridgeState {
++    D1BridgeHeader header;
++    D1BridgePlayer player;
++    D1BridgeCommand command;              // обратный канал: GMod → TH4
++    int32_t  FineMap[FINE_MAP_SIZE];      // 112*112 int
++    uint8_t  TileBlockWalking[TBW_SIZE];  // 2049 uchar
++    uint8_t  PlayerMap[PLAYER_MAP_SIZE];   // 112*112 char
++};
++#pragma pack(pop)
++
++// Глобальные дескрипторы shared memory
++static HANDLE g_hMapFile = NULL;
++static D1BridgeState* g_pState = NULL;
++static uint32_t g_seq = 0;
++
++// Логирование для диагностики
++static void D1BridgeLog(const char* msg)
++{
++    FILE* f = fopen("d1bridge.log", "a");
++    if (f) {
++        fprintf(f, "%s\n", msg);
++        fclose(f);
++    }
++}
++
++// Инициализация shared memory (вызывается один раз при старте)
++bool D1BridgeInit()
++{
++    if (g_pState) return true; // уже инициализировано
++
++    size_t size = sizeof(D1BridgeState);
++    D1BridgeLog("D1BridgeInit: start");
++
++    g_hMapFile = CreateFileMappingA(
++        INVALID_HANDLE_VALUE,   // используем файл подкачки
++        NULL,                  // десколатор по умолчанию
++        PAGE_READWRITE,        // чтение/запись
++        0,                     // старшее 32 бита размера
++        (DWORD)size,           // младшие 32 бита размера
++        D1BRIDGE_SHM_NAME      // имя
++    );
++
++    if (!g_hMapFile) {
++        DWORD err = GetLastError();
++        char buf[256];
++        sprintf(buf, "D1BridgeInit: CreateFileMappingA failed, err=%lu", err);
++        D1BridgeLog(buf);
++        return false;
++    }
++
++    D1BridgeLog("D1BridgeInit: CreateFileMappingA OK");
++
++    g_pState = (D1BridgeState*)MapViewOfFile(
++        g_hMapFile,
++        FILE_MAP_ALL_ACCESS,
++        0, 0, size
++    );
++
++    if (!g_pState) {
++        DWORD err = GetLastError();
++        char buf[256];
++        sprintf(buf, "D1BridgeInit: MapViewOfFile failed, err=%lu", err);
++        D1BridgeLog(buf);
++        CloseHandle(g_hMapFile);
++        g_hMapFile = NULL;
++        return false;
++    }
++
++    D1BridgeLog("D1BridgeInit: MapViewOfFile OK");
++
++    // Инициализация заголовка
++    g_pState->header.magic = D1BRIDGE_MAGIC;
++    g_pState->header.version = D1BRIDGE_VERSION;
++    g_pState->header.seq = 0;
++    // Читатели (DLL, Python) определяют раскладку по этому размеру —
++    // так они переживают смену версии без пересборки.
++    g_pState->header.player_size = (uint32_t)sizeof(D1BridgePlayer);
++    g_pState->header.timestamp_ms = 0;
++
++    D1BridgeLog("D1BridgeInit: done");
++    return true;
++}
++
++// Публикация текущего состояния (вызывается каждый кадр из GameLogic)
++void D1BridgePublish()
++{
++    if (!g_pState) return;
++
++    // Проверяем, что игра в подземелье (Players валиден)
++    if (!Players || CurrentPlayerIndex >= 4) return;
++
++    Player& p = Players[CurrentPlayerIndex];
++
++    // Проверяем, что герой существует
++    if (!p.IsExists) return;
++
++    // Seqlock: начинаем запись (seq становится нечётным)
++    g_seq++;
++    g_pState->header.seq = g_seq * 2 + 1; // нечётное = идёт запись
++
++    // Данные героя
++    g_pState->player.Row = p.Row;
++    g_pState->player.Col = p.Col;
++    g_pState->player.dir = (int16_t)(uint8_t)p.dir;
++    g_pState->player.dungeon = (int16_t)(uint8_t)p.dungeon;
++    g_pState->player.CurAction = (int16_t)(uint8_t)p.CurAction;
++    g_pState->player.CurLife = p.CurLife;
++    g_pState->player.MaxCurLife = p.MaxCurLife;
++    g_pState->player.CurMana = p.CurMana;
++    g_pState->player.MaxCurMana = p.MaxCurMana;
++    g_pState->player.CharLevel = p.CharLevel;
++    g_pState->player.ClassID = (uint16_t)(uint8_t)p.ClassID;
++    g_pState->player.Xp = p.Xp;
++    g_pState->player.TotalGold = p.TotalGold;
++
++    // Имя героя
++    memset(g_pState->player.name, 0, 32);
++    strncpy(g_pState->player.name, p.playerName, 31);
++
++    // Копируем карту
++    // FineMap[112][112] — int
++    memcpy(g_pState->FineMap, FineMap, FINE_MAP_SIZE * sizeof(int32_t));
++
++    // TileBlockWalking[2049] — uchar
++    memcpy(g_pState->TileBlockWalking, TileBlockWalking, TBW_SIZE);
++
++    // PlayerMap[112][112] — char
++    memcpy(g_pState->PlayerMap, PlayerMap, PLAYER_MAP_SIZE);
++
++    // Timestamp
++    g_pState->header.timestamp_ms = GetTickCount64();
++
++    // Seqlock: завершаем запись (seq становится чётным)
++    g_seq++;
++    g_pState->header.seq = g_seq * 2; // чётное = стабильно
++}
++
++// Обработка команд от GMod (вызывается каждый кадр из GameLogic)
++void D1BridgeProcessCommands()
++{
++    if (!g_pState) return;
++    if (!Players || CurrentPlayerIndex >= 4) return;
++
++    Player& p = Players[CurrentPlayerIndex];
++    if (!p.IsExists) return;
++
++    static uint32_t lastCmdSeq = 0;
++
++    // Читаем команду из shared memory
++    uint32_t cmdSeq = g_pState->command.seq;
++
++    // Новая команда?
++    if (cmdSeq == lastCmdSeq) return;
++    lastCmdSeq = cmdSeq;
++
++    uint32_t action = g_pState->command.action;
++    int32_t param1 = g_pState->command.param1;
++    int32_t param2 = g_pState->command.param2;
++
++    // Применяем команду к Player
++    switch (action) {
++        case 0:  // STAND
++            ClearPlayerPath(CurrentPlayerIndex);
++            p.destAction = PCMD_0_STAND;
++            break;
++        case 1:  // WALKUR
++        case 2:  // WALKUL
++        case 3:  // WALKDR
++        case 4:  // WALKDL
++        case 5:  // WALKU
++        case 6:  // WALKR
++        case 7:  // WALKD
++        case 8:  // WALKL
++            // Движение в TH4 обрабатывается НЕ через destAction, а через
++            // очередь player.walkPath[0] (см. Player.cpp:6020-6058).
++            // destAction для шагов не используется — только для атак/кастов.
++            //
++            // Делаем ровно то, что TH4 делает при клике по клетке
++            // (msg.cpp: ClearPlayerPath + MakePlayerPath).
++            {
++                // Смещения клеток для 8 направлений.
++                //
++                // Источник истины — параметры changeRow/changeCol в вызовах
++                // StartWalk* (Player.cpp:6051-6058), они задают сдвиг клетки
++                // за один шаг. Проверено так же по RowStep/ColStep
++                // (Player.cpp:6890) с обратным знаком по Col.
++                //
++                //   1=UR( 0,-1) 2=UL(-1, 0) 3=DR(+1, 0) 4=DL( 0,+1)
++                //   5=U (-1,-1) 6=R (+1,-1) 7=D (+1,+1) 8=L (-1,+1)
++                //
++                // Экранная изометрия TH4 (см. Р-21):
++                //   px = cx + (dRow-dCol)*64,  py = cy + (dRow+dCol)*32
++                static const int dRow[9] = { 0,  0, -1,  1,  0, -1,  1,  1, -1 };
++                static const int dCol[9] = { 0, -1,  0,  0,  1, -1, -1,  1,  1 };
++                int idx = (action >= 1 && action <= 8) ? action : 0;
++
++                int targetRow = p.Row + dRow[idx];
++                int targetCol = p.Col + dCol[idx];
++
++                // Целевая клетка должна быть в пределах карты и проходима
++                if (targetRow < 0 || targetRow >= 112 || targetCol < 0 || targetCol >= 112) {
++                    break;
++                }
++
++                ClearPlayerPath(CurrentPlayerIndex);
++                MakePlayerPath(CurrentPlayerIndex, targetRow, targetCol, 1);
++
++                char wbuf[160];
++                sprintf(wbuf, "D1Bridge: walk to (%d,%d) path[0]=%d walkPath[0]=%d",
++                        targetRow, targetCol, (int)action, (int)p.walkPath[0]);
++                D1BridgeLog(wbuf);
++            }
++            break;
++        case 20: // MELEE_ATTACK_TO_MONSTER
++            p.destAction = PCMD_20_MELEE_ATTACK_TO_MONSTER;
++            p.destParam1 = param1; // monster index
++            break;
++        case 22: // RANGE_ATTACK_TO_MONSTER
++            p.destAction = PCMD_22_RANGE_ATTACK_TO_MONSTER;
++            p.destParam1 = param1; // monster index
++            break;
++        case 24: // CAST_SPELL_TO_MONSTER
++            p.destAction = PCMD_24_CAST_SPELL_TO_MONSTER;
++            p.destParam1 = param1; // monster index
++            p.destParam2 = param2; // spell level
++            break;
++        case 26: // CAST_NOT_ORIENTED_SPELL
++            p.destAction = PCMD_26_CAST_NOT_ORIENTED_SPELL;
++            p.destParam1 = param1; // spell id
++            break;
++        default:
++            // Неизвестная команда — игнорируем
++            break;
++    }
++
++    char buf[128];
++    sprintf(buf, "D1Bridge: cmd seq=%u action=%u param1=%d param2=%d",
++            cmdSeq, action, param1, param2);
++    D1BridgeLog(buf);
++}
++
++// Освобождение shared memory (при выходе)
++void D1BridgeShutdown()
++{
++    if (g_pState) {
++        UnmapViewOfFile(g_pState);
++        g_pState = NULL;
++    }
++    if (g_hMapFile) {
++        CloseHandle(g_hMapFile);
++        g_hMapFile = NULL;
++    }
++}
+diff --git a/src/d1export.cpp b/src/d1export.cpp
+new file mode 100644
+index 0000000..6f0769e
+--- /dev/null
++++ b/src/d1export.cpp
+@@ -0,0 +1,23 @@
++// d1export.cpp — экспорт FineMap/TileBlockWalking для D1-моста
++#include "stdafx.h"
++#include <stdio.h>
++
++// FineMap и TileBlockWalking уже объявлены в vars.h (включён через stdafx.h)
++// Дублирующие объявления не нужны — просто используем их напрямую
++
++void D1ExportMap()
++{
++    FILE* f = fopen("d1map_export.txt", "w");
++    if (!f) return;
++    
++    fprintf(f, "FineMap=0x%08X\n", (unsigned int)FineMap);
++    fprintf(f, "TileBlockWalking=0x%08X\n", (unsigned int)TileBlockWalking);
++    fprintf(f, "TileMap=0x%08X\n", (unsigned int)TileMap);
++    fprintf(f, "PlayerMap=0x%08X\n", (unsigned int)PlayerMap);
++    fprintf(f, "IsWall=0x%08X\n", (unsigned int)IsWall);
++    fprintf(f, "TransMap=0x%08X\n", (unsigned int)TransMap);
++    fprintf(f, "TileBlockSight=0x%08X\n", (unsigned int)TileBlockSight);
++    fprintf(f, "TileBlockMissle=0x%08X\n", (unsigned int)TileBlockMissle);
++    
++    fclose(f);
++}
+diff --git a/src/funcs.h b/src/funcs.h
+index e0d1652..e401c0e 100644
+--- a/src/funcs.h
++++ b/src/funcs.h
+@@ -2048,6 +2048,11 @@ void FreeCharacterTable();//
+ void ProcessBerserk(Player& player, bool& autoClick);
+ void GetParamsFromConfig();
+ void InitTH2( void* arg );//
++void D1ExportMap();
++bool D1BridgeInit();
++void D1BridgePublish();
++void D1BridgeProcessCommands();
++void D1BridgeShutdown();
+ void ExitTH2();//
+ void MotionInterpolationBegin( int& offsetX, int& offsetY );
+ void MotionInterpolationEnd();
+diff --git a/thehell3.vcxproj b/thehell3.vcxproj
+index db108c3..fa4c182 100644
+--- a/thehell3.vcxproj
++++ b/thehell3.vcxproj
+@@ -158,6 +158,8 @@
+     <ClCompile Include="src\IniFile.cpp" />
+     <ClCompile Include="src\InventoryPanel.cpp" />
+     <ClCompile Include="src\Item.cpp" />
++    <ClCompile Include="src\d1export.cpp" />
++    <ClCompile Include="src\d1bridge.cpp" />
+     <ClCompile Include="src\Lights.cpp" />
+     <ClCompile Include="src\Engine.cpp" />
+     <ClCompile Include="src\LoadingScreen.cpp" />
