@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Diablo 3D — мост TH4 -> GMod
+# ---------------------------------------------------------------------------
+
+# --- Исходники TH4: подключены как git-submodule ---------------------------
+# vendor/the-hell-4-src -> https://github.com/roboserg/the-hell-4-src.git
+# (инициализация: git submodule update --init)
+
+# --- Сборка C++ (артефакты MSBuild) ----------------------------------------
+bridge/gmod/Release/
+bridge/gmod/x64/
+bridge/gmod/d1bridge_dll/Release/
+bridge/gmod/d1bridge_dll/x64/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.tlog/
+*.recipe
+*.lastbuildstate
+*.FileListAbsolute.txt
+
+# --- Сгенерированные файлы экспортов (сборка делает их из lua_shared.dll) --
+bridge/gmod/*.def
+bridge/gmod/lua*_exports.txt
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.pyc
+
+# --- Логи и временное -------------------------------------------------------
+*.log
+*.bak
+bridge/reader/GMod
+
+# --- Прочее -----------------------------------------------------------------
+Thumbs.db
+desktop.ini

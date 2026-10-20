@@ -1,0 +1,140 @@
+{
+  "module": "TH4.exe",
+  "player_struct_size": 98304,
+  "player_index": null,
+  "players_ptr_rva": null,
+  "player_base_now": "0x1018d5c",
+  "player_name": "Iosia",
+  "name_off": 168,
+  "flags_off": 163,
+  "name_len": 32,
+  "_note": "Layout RUNNING build 0.772 (empirical). Prefix=clone+4, tail(flags..)=clone-1. ВАЖНО: в структуре имя встречается ДВАЖДЫ (+0xA8 и +0xA8+0x174) - bootstrap может цепляться за второе вхождение и сдвинуть базу на 0x174. Живые копии: 0xF7803C (CurLife совпадает с UI) и 0xDE7818 (дубль). Найдено findhero.py 16.10.2026.",
+  "fields": {
+    "dungeon": {
+      "off": 48,
+      "type": "i8"
+    },
+    "Row": {
+      "off": 50,
+      "type": "i16"
+    },
+    "Col": {
+      "off": 52,
+      "type": "i16"
+    },
+    "NextRow": {
+      "off": 54,
+      "type": "i16"
+    },
+    "NextCol": {
+      "off": 56,
+      "type": "i16"
+    },
+    "xOfs": {
+      "off": 72,
+      "type": "i32"
+    },
+    "yOfs": {
+      "off": 76,
+      "type": "i32"
+    },
+    "xVel": {
+      "off": 80,
+      "type": "i32"
+    },
+    "yVel": {
+      "off": 84,
+      "type": "i32"
+    },
+    "dir": {
+      "off": 88,
+      "type": "i8"
+    },
+    "Appearance": {
+      "off": 92,
+      "type": "i32"
+    },
+    "LightRadius": {
+      "off": 167,
+      "type": "u8"
+    },
+    "ClassID": {
+      "off": 200,
+      "type": "i8"
+    },
+    "CurStrength": {
+      "off": 201,
+      "type": "i16"
+    },
+    "CurMagic": {
+      "off": 205,
+      "type": "i16"
+    },
+    "CurDexterity": {
+      "off": 209,
+      "type": "i16"
+    },
+    "CurVitality": {
+      "off": 213,
+      "type": "i16"
+    },
+    "BaseDamage": {
+      "off": 219,
+      "type": "i32"
+    },
+    "BaseLife": {
+      "off": 227,
+      "type": "i32"
+    },
+    "MaxBaseLife": {
+      "off": 231,
+      "type": "i32"
+    },
+    "CurLife": {
+      "off": 235,
+      "type": "i32"
+    },
+    "MaxCurLife": {
+      "off": 239,
+      "type": "i32"
+    },
+    "BaseMana": {
+      "off": 247,
+      "type": "i32"
+    },
+    "MaxBaseMana": {
+      "off": 251,
+      "type": "i32"
+    },
+    "CurMana": {
+      "off": 255,
+      "type": "i32"
+    },
+    "MaxCurMana": {
+      "off": 259,
+      "type": "i32"
+    },
+    "CharLevel": {
+      "off": 267,
+      "type": "i16"
+    },
+    "Xp": {
+      "off": 271,
+      "type": "i64"
+    },
+    "TotalGold": {
+      "off": 287,
+      "type": "i32"
+    },
+    "CursorRow": {
+      "off": 291,
+      "type": "i16"
+    },
+    "CursorCol": {
+      "off": 293,
+      "type": "i16"
+    }
+  },
+  "module_base_hint": "0x1400000",
+  "finemap_addr": "0x2b1b000"
+}

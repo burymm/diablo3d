@@ -1,0 +1,3 @@
+[submodule "vendor/the-hell-4-src"]
+	path = vendor/the-hell-4-src
+	url = https://github.com/roboserg/the-hell-4-src.git
